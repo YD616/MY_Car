@@ -1,7 +1,7 @@
 /* 串口通信 USART3 (蓝牙, 9600bps), printf 重定向到 USART3
  *   USART_SendBit / USART_SendString   发送
  *   USART_GetBit / USART_GetString     接收 (非阻塞)
- *   KPA_Get / KIA_Get / KDA_Get / LV_Get  单值数据包解析
+ *   KPA_Get / KIA_Get / KDA_Get / SV_Get  单值数据包解析
  * 接收协议: 包结束符支持 "##" 或 "\r\n" */
 #ifndef __SERIAL_H__
 #define __SERIAL_H__
@@ -40,7 +40,7 @@ uint16_t USART_GetString(char *buf, uint16_t maxlen);  /* 接收一个完整数�
 uint8_t KPA_Get(float *value);                         /* "KPA:xx##" -> Kp */
 uint8_t KIA_Get(float *value);                         /* "KIA:xx##" -> Ki */
 uint8_t KDA_Get(float *value);                         /* "KDA:xx##" -> Kd */
-uint8_t LV_Get (float *value);                         /* "LV:xx.xx##" -> 左轮目标速度 (cm/s) */
+uint8_t SV_Get (float *value);                         /* "SV:xx.xx##" -> 右轮目标速度 (cm/s) */
 
 /* printf 重定向原型 (GCC / Keil 两种写法) */
 #ifdef __GNUC__

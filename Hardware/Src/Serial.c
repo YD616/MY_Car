@@ -5,7 +5,7 @@
  *   USART_GetBit(&c)             接收一个字符 (非阻塞)
  *   USART_GetString(buf,len)     接收一个完整数据包 (非阻塞)
  *   KPA_Get/KIA_Get/KDA_Get(&v)  接收 "KPA:xx##" / "KIA:xx##" / "KDA:xx##"
- *   LV_Get(&v)                   接收左轮目标速度包 "LV:xx.xx##"
+ *   SV_Get(&v)                   接收数据包 "SV:xx.xx##"
  * 接收协议: 包结束符支持 "##" 或 "\r\n", 中断按包缓存, 调用时取最近一包
  * 例: "KPA:1.21##" -> KPA_Get 返回 1, *v = 1.21
  * 多格式分发: 各 Get 可被主循环依次轮询, 内部带"未匹配回滚缓存", 不会互相吃掉对方的包 */
@@ -19,7 +19,7 @@ static volatile uint16_t bt_rx_len = 0;              /* 已接收字节数 */
 static volatile uint8_t  bt_rx_ready = 0;            /* 收到完整一行的标志 */
 static uint8_t           bt_rx_byte = 0;             /* 中断单字节中转(固定地址, 防与主循环 len 竞争) */
 
-/* 主循环中依次轮询的单值解析函数总数 (KPA/KIA/KDA/LV):
+/* 主循环中依次轮询的单值解析函数总数 (KPA/KIA/KDA/SV):
  * 数据包被全部函数尝试过仍不匹配, 才判定为未知包丢弃.
  * !!! 注意: 以后新增/删除解析函数时必须同步改此值, 否则排最后的函数会收不到包 !!! */
 #define SERIAL_SINGLE_GET_COUNT   4
@@ -111,7 +111,7 @@ static uint16_t serial_rx_line(char *buf, uint16_t maxlen)
     return len;
 }
 
-/* ---- 单值数据包解析 (KPA/KIA/KDA/LV) ---- */
+/* ---- 单值数据包解析 (KPA/KIA/KDA/SV) ---- */
 /* 取一行: 优先返回"未匹配回滚缓存", 其次取新数据包 (static 内部函数) */
 static uint16_t serial_rx_line_keep(char *buf, uint16_t maxlen)
 {
@@ -235,7 +235,7 @@ uint16_t USART_GetString(char *buf, uint16_t maxlen)
 uint8_t KPA_Get(float *value) { return serial_get_single("KPA", value); }   /* "KPA:xx##" */
 uint8_t KIA_Get(float *value) { return serial_get_single("KIA", value); }   /* "KIA:xx##" */
 uint8_t KDA_Get(float *value) { return serial_get_single("KDA", value); }   /* "KDA:xx##" */
-uint8_t LV_Get (float *value) { return serial_get_single("LV",  value); }   /* "LV:xx.xx##" */
+uint8_t SV_Get (float *value) { return serial_get_single("SV",  value); }   /* "SV:xx.xx##" */
 
 /* ---- USART3 接收中断回调 ---- */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)

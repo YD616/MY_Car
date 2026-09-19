@@ -63,7 +63,8 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static float lv_target = 0.0f;    /* 左轮目标速度 (cm/s), 蓝牙 "LV:xx.xx##" 设定 */
+static float lv_target = 0.0f;    /* 左轮目标速度 (cm/s), 当前无蓝牙命令设定, 恒为 0 */
+static float rv_target = 0.0f;    /* 右轮目标速度 (cm/s), 蓝牙 "SV:xx.xx##" 设定 */
 
 /* USER CODE END PV */
 
@@ -76,7 +77,9 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* 行4(y=48) 显示左轮速度环 Kp/Ki/Kd, 数据源为 pid_speed_L 实例 */
+/* 行4(y=48) 显示速度环 Kp/Ki/Kd
+ * 数据源必须是 pid_speed_L: 蓝牙 KPA/KIA/KDA 只写 pid_speed_L,
+ * 显示与命令写入必须是同一实例, 否则行4 恒为开机初值不更新 */
 static void OLED_ShowPidRow(void)
 {
     OLED_ClearArea(0, 48, 128, 12);
@@ -85,6 +88,27 @@ static void OLED_ShowPidRow(void)
     OLED_ShowFloatNum(88, 48, pid_speed_L.Kd, 3, 2, OLED_6X8);
 }
 
+/* 将带符号 PID 输出转换为电机方向 + 限幅后的 PWM */
+static void Motor_DriveSpeed(char wheel, float out)
+{
+    int8_t dir;
+    float  mag;
+
+    if (out > 0.0f) {
+        dir = DIR_FWD;
+        mag = out;
+    } else if (out < 0.0f) {
+        dir = DIR_BWD;
+        mag = -out;
+    } else {
+        dir = DIR_STOP;
+        mag = 0.0f;
+    }
+
+    if (mag > (float)PWM_MAX) mag = (float)PWM_MAX;
+    Motor_Direction(wheel, dir);
+    Motor_PWM(wheel, (int16_t)mag);
+}
 /* USER CODE END 0 */
 
 /**
@@ -156,7 +180,7 @@ int main(void)
   /* 上电校准: 采集陀螺零偏, 记录当前姿态为直立目标 */
   Sensor_Calibrate();
 
-  /* 主界面: 行0 目标速度 / 行1 R / 行2 VL / 行3 VR / 行4 KpKiKd */
+  /* 主界面: 行0 蓝牙设定速度 / 行1 R / 行2 VL / 行3 VR / 行4 KpKiKd */
   OLED_Clear();
   OLED_ShowString(0, 12, "R:",  OLED_6X8);
   OLED_ShowString(0, 24, "VL:", OLED_6X8);
@@ -167,8 +191,10 @@ int main(void)
   OLED_Update();
   Serial_Init();   /* USART3 蓝牙: 中断接收 + printf 重定向 */
 	Motor_Init();
-	/* 左轮速度环 PID: Kp/Ki/Kd 初值, 蓝牙 KPA/KIA/KDA 可在线改参 */
-	PID_Init(&pid_speed_L, 150, 0, 0);
+	/* 左右轮速度环 PID: 当前先使用同一组参数
+	 * 蓝牙 KPA/KIA/KDA/SV 只在线修改左轮 pid_speed_L, 行4 显示的也是该实例 */
+	PID_Init(&pid_speed_L, 125, 215, 0.2);
+	PID_Init(&pid_speed_R, 125, 200, 0.28);
 	OLED_ShowPidRow();   /* 开机画出 行4 Kp/Ki/Kd */
 	OLED_Update();
 
@@ -179,86 +205,84 @@ int main(void)
   while (1)
   {
     static uint32_t report_tick = 0;
-		static uint32_t pid_tick = 0;
-    uint32_t now = HAL_GetTick();
+    static uint32_t pid_tick = 0;
 
-    /* ---- 左轮速度环 PI: 5ms 一拍, 反馈低通/抗饱和由 PID_ComputeInc 完成 ---- */
-    if (now - pid_tick >= 5U) {
-        float  v_l;
-        float  dt_ms;
-        float  out;
-        float  mag;
-        int8_t dir;
+    /* ---- 左右轮速度环 PI: 5ms 一拍，反馈低通/抗饱和由 PID_ComputeInc 完成 ---- */
+    {
+        uint32_t now = HAL_GetTick();
 
-        /* 本拍只读一次编码器，并把同一时刻的真实周期交给 PID */
-        v_l = Encoder_GetSpeedL();
-        dt_ms = (float)(now - pid_tick);
-        pid_tick = now;
+        if (now - pid_tick >= 5U) {
+            float v_l, v_r, out_l, out_r, dt_ms;
 
-        PID_SetSetpoint(&pid_speed_L, lv_target);   /* 目标速度每拍同步(蓝牙可改) */
+            dt_ms = (float)(now - pid_tick);
+            pid_tick = now;
 
-        if (lv_target > -SPEED_STOP_EPS && lv_target < SPEED_STOP_EPS) {
-            PID_Reset(&pid_speed_L);
-            Motor_Direction('L', DIR_STOP);
-            Motor_PWM('L', 0);
-        } else {
-            out = PID_ComputeInc(&pid_speed_L, v_l, (float)PWM_MAX, dt_ms);
+            /* 同一时刻各读一次编码器，左右轮 PID 使用同一控制周期 */
+            v_l = Encoder_GetSpeedL();
+            v_r = Encoder_GetSpeedR();
 
-            if (out > 0.0f) {
-                dir = DIR_FWD;
-                mag = out;
-            } else if (out < 0.0f) {
-                dir = DIR_BWD;
-                mag = -out;
+            PID_SetSetpoint(&pid_speed_L, lv_target);
+            PID_SetSetpoint(&pid_speed_R, rv_target);
+
+            if (lv_target > -SPEED_STOP_EPS && lv_target < SPEED_STOP_EPS) {
+                PID_Reset(&pid_speed_L);
+                Motor_Direction('L', DIR_STOP);
+                Motor_PWM('L', 0);
             } else {
-                dir = DIR_STOP;
-                mag = 0.0f;
+                out_l = PID_ComputeInc(&pid_speed_L, v_l, (float)PWM_MAX, dt_ms);
+                Motor_DriveSpeed('L', out_l);
             }
 
-            if (mag > (float)PWM_MAX) mag = (float)PWM_MAX;
-            Motor_Direction('L', dir);
-            Motor_PWM('L', (int16_t)mag);
+            if (rv_target > -SPEED_STOP_EPS && rv_target < SPEED_STOP_EPS) {
+                PID_Reset(&pid_speed_R);
+                Motor_Direction('R', DIR_STOP);
+                Motor_PWM('R', 0);
+            } else {
+                out_r = PID_ComputeInc(&pid_speed_R, v_r, (float)PWM_MAX, dt_ms);
+                Motor_DriveSpeed('R', out_r);
+            }
         }
     }
 
     /* ---- 蓝牙命令处理 ---- */
     {
-        float kp, ki, kd, lv;
+        float kp, ki, kd, sv;
 
-        /* "KPA:xx##" -> Kp */
+        /* "KPA:xx##" -> 左轮 Kp */
         if (KPA_Get(&kp)) {
             PID_SetTunings(&pid_speed_L, kp, pid_speed_L.Ki, pid_speed_L.Kd);
             OLED_ShowPidRow();
             OLED_Update();
         }
 
-        /* "KIA:xx##" -> Ki */
+        /* "KIA:xx##" -> 左轮 Ki */
         if (KIA_Get(&ki)) {
             PID_SetTunings(&pid_speed_L, pid_speed_L.Kp, ki, pid_speed_L.Kd);
             OLED_ShowPidRow();
             OLED_Update();
         }
 
-        /* "KDA:xx##" -> Kd */
+        /* "KDA:xx##" -> 左轮 Kd */
         if (KDA_Get(&kd)) {
             PID_SetTunings(&pid_speed_L, pid_speed_L.Kp, pid_speed_L.Ki, kd);
             OLED_ShowPidRow();
             OLED_Update();
         }
 
-        /* "LV:xx.xx##" -> 目标速度(cm/s), 下一控制拍生效 */
-        if (LV_Get(&lv)) {
-            lv_target = lv;
+        /* "SV:xx.xx##" -> 左轮目标速度(cm/s), 下一控制拍生效 */
+        if (SV_Get(&sv)) {
+            lv_target = sv;
             OLED_ClearArea(0, 0, 128, 12);
             OLED_ShowFloatNum(0, 0, lv_target, 3, 2, OLED_6X8);
             OLED_Update();
         }
+
     }
 
     /* ---- 每 100ms: 蓝牙遥测上报 + OLED 速度刷新 ---- */
-    if (now - report_tick >= 100) {
+    if (HAL_GetTick() - report_tick >= 100) {
         float v_l, v_r;
-        report_tick = now;
+        report_tick = HAL_GetTick();
         v_l = Encoder_GetSpeedL();
         v_r = Encoder_GetSpeedR();
 
